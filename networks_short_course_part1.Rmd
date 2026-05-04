@@ -34,10 +34,10 @@ library(scales)
 
 #will need to test on final folder structure shared - we can post to GitHub 
 nodes <- read.csv("https://raw.githubusercontent.com/uri-ncipher/Causal-Inference-and-Networks-Short-Course/refs/heads/main/TRIPsim_nodes.csv")
-#edges <- read.csv("../TRIP_network_simulation/TRIPsim_edges.csv")
+edges <- read.csv("https://raw.githubusercontent.com/uri-ncipher/Causal-Inference-and-Networks-Short-Course/refs/heads/main/TRIPsim_edges.csv")
 
 head(nodes)
-#head(edges)
+head(edges)
 
 ```
 
