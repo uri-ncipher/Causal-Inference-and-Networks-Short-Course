@@ -1,0 +1,1079 @@
+---
+title: 'Networks and Causal Inference Short Course: Part 1'
+author: "Claire Pearsall, Ashley Buchanan"
+date: "2026-05-04"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+### Using Data from the Transmission Reduction Intervention Project in Athens, Greece {.unnumbered}
+
+1.  Step 1: Download the data and load it into R Studio
+
+This is a simulated toy dataset made for this course. It is based on data collected from the Transmission Reduction Intervention Project in Athens Greece. Public data here: <https://www.icpsr.umich.edu/web/NAHDAP/studies/39059/versions/V2/staff>
+
+Read more: <https://pubmed.ncbi.nlm.nih.gov/27917890/>
+
+```{r results='hide'}
+
+#install packages (if needed)
+#install.packages(c("readxl","dplyr","ggplot2","geepack","tidyverse"))
+#load packages
+library(readxl)
+library(dplyr)
+library(knitr)
+library(ggplot2)
+library(geepack)
+library(tidyverse)
+library(cobalt)
+library(purrr)
+library(scales)
+
+```
+
+```{r}
+# -----------------------------
+# 1. Read data into R
+# -----------------------------
+
+#will need to test on final folder structure shared - we can post to GitHub 
+nodes <- read.csv("../TRIP_network_simulation/TRIPsim_nodes.csv")
+edges <- read.csv("../TRIP_network_simulation/TRIPsim_edges.csv")
+
+head(nodes)
+head(edges)
+
+```
+
+### Generate descriptive statistical analyses and histograms
+
+```{r}
+# -----------------------------
+# 2. Descriptive Analysis
+# -----------------------------
+
+# Basic summary statistics
+summary(nodes)
+
+make_table1 <- function(data, cat_vars, num_vars) {
+  
+  # Categorical variables
+  cat_table <- map_dfr(cat_vars, function(var) {
+    data %>%
+      count(.data[[var]]) %>%
+      mutate(
+        variable = var,
+        level = as.character(.data[[var]]),
+        stat = paste0(n, " (", percent(n / sum(n), accuracy = 0.1), ")")
+      ) %>%
+      select(variable, level, stat)
+  })
+  
+  # Numeric variables
+  num_table <- map_dfr(num_vars, function(var) {
+    data %>%
+      summarise(
+        mean = mean(.data[[var]], na.rm = TRUE),
+        sd   = sd(.data[[var]], na.rm = TRUE)
+      ) %>%
+      mutate(
+        variable = var,
+        level = "",
+        stat = sprintf("%.2f (%.2f)", mean, sd)
+      ) %>%
+      select(variable, level, stat)
+  })
+  
+  # Combine
+  bind_rows(cat_table, num_table)
+}
+
+table1 <- make_table1(
+  data = nodes,
+  cat_vars = c("posneg", "share", "education", "employment", "treatment", "outcome"),
+  num_vars = c("num_nn", "num_tnn", "num_utnn")
+)
+
+table1
+
+# Means of key numeric variables
+nodes %>%
+  summarise(
+    mean_nn = mean(num_nn, na.rm = TRUE),
+    mean_tnn = mean(num_tnn, na.rm = TRUE),
+    mean_utnn = mean(num_utnn, na.rm = TRUE)
+  )
+
+# Plots of network-related variables
+
+ggplot(nodes, aes(x = factor(num_nn))) +
+  geom_bar() +
+  scale_x_discrete(breaks = 0:9, labels = 0:9) +
+  labs(title = "Distribution of Number of Nearest Neighbors",
+       x = "Number of Nearest Neighbors",
+       y = "Count")
+
+ggplot(nodes, aes(x = factor(num_tnn))) +
+  geom_bar() +
+  scale_x_discrete(breaks = 0:4, labels = 0:4) +
+  labs(title = "Distribution of Exposed Neighbors",
+       x = "Number of Exposed Neighbors",
+       y = "Count")
+
+ggplot(nodes, aes(x = factor(num_utnn))) +
+  geom_bar() +
+  scale_x_discrete(breaks = 0:8, labels = 0:8) +
+  labs(title = "Distribution of Unexposed Neighbors",
+       x = "Number of Unexposed Neighbors",
+       y = "Count")
+
+```
+
+### Analysis of the association between community alerts and any risk behavior outcome, unadjusted and adjusted for baseline covariates.
+
+```{r}
+
+# -----------------------------
+# 3. Assess association
+# -----------------------------
+
+#Conditional RD,RR - condition on covariates in outcome model (not marginal)
+
+#Unadjusted models
+#Risk Difference
+
+model_rd_unadj <- glm(
+  outcome ~ treatment,
+  data = nodes,
+  family = binomial(link = "identity")
+)
+
+#Risk Ratio
+model_rr_unadj <- glm(
+  outcome ~ treatment,
+  data = nodes,
+  family = binomial(link = "log")
+)
+
+#adjusted models
+#Risk Difference
+# Binomial Log model did not converge - fit with GEE log-Poisson to get a robust 
+# estimator of the variance
+
+# rescale age (per 10 year increase)
+nodes$age10 <- nodes$age/10
+
+ # model_rr <- glm(
+ #   outcome ~ treatment + age10 + posneg + share + education + employment,
+ #   data = nodes,
+ #   family = binomial(link = "log")
+ # )
+
+gee_rr <- geeglm(
+  outcome ~ treatment + age10 + posneg + date + share + education + employment,
+  data = nodes,
+  id = id,
+  family = poisson(link = "log"),
+  corstr = "independence"
+)
+
+#Risk Ratio
+# Binomial Identity model did not converge - fit with GEE Normal-identity to get a robust 
+# estimator of the variance
+# model_rd <- glm(
+#   outcome ~ treatment + posneg + share + education + employment,
+#   data = nodes,
+#   family = binomial(link = "identity")
+# )
+
+gee_rd <- geeglm(
+  outcome ~ treatment + age10 + posneg + date + share + education + employment,
+  data = nodes,
+  id = id,
+  family = gaussian(link = "identity"),
+  corstr = "independence"
+)
+
+#Format output into a table
+# Associational RR and RD
+
+# Unadjusted RR
+b_rr_unadj <- coef(model_rr_unadj)["treatment"]
+se_rr_unadj <- sqrt(vcov(model_rr_unadj)["treatment", "treatment"])
+rr_unadj <- exp(b_rr_unadj)
+rr_unadj_ci <- exp(b_rr_unadj + c(-1, 1) * 1.96 * se_rr_unadj)
+
+# Unadjusted RD
+b_rd_unadj <- coef(model_rd_unadj)["treatment"]
+se_rd_unadj <- sqrt(vcov(model_rd_unadj)["treatment", "treatment"])
+rd_unadj <- b_rd_unadj
+rd_unadj_ci <- b_rd_unadj + c(-1, 1) * 1.96 * se_rd_unadj
+
+# Adjusted RR
+b_rr_adj <- coef(gee_rr)["treatment"]
+se_rr_adj <- sqrt(vcov(gee_rr)["treatment", "treatment"])
+rr_adj <- exp(b_rr_adj)
+rr_adj_ci <- exp(b_rr_adj + c(-1, 1) * 1.96 * se_rr_adj)
+
+# Adjusted RD
+b_rd_adj <- coef(gee_rd)["treatment"]
+se_rd_adj <- sqrt(vcov(gee_rd)["treatment", "treatment"])
+rd_adj <- b_rd_adj
+rd_adj_ci <- b_rd_adj + c(-1, 1) * 1.96 * se_rd_adj
+
+
+results <- data.frame(
+  model = c("Unadjusted", "Unadjusted", "Adjusted", "Adjusted"),
+  measure = c("Risk ratio", "Risk difference", "Risk ratio", "Risk difference"),
+  estimate = c(rr_unadj, rd_unadj, rr_adj, rd_adj),
+  lower_95_ci = c(rr_unadj_ci[1], rd_unadj_ci[1], rr_adj_ci[1], rd_adj_ci[1]),
+  upper_95_ci = c(rr_unadj_ci[2], rd_unadj_ci[2], rr_adj_ci[2], rd_adj_ci[2])
+)
+
+results
+
+#Round to 3 decimal places
+results$estimate <- round(results$estimate, 3)
+results$lower_95_ci <- round(results$lower_95_ci, 3)
+results$upper_95_ci <- round(results$upper_95_ci, 3)
+
+results
+```
+
+### Check the positivity assumption for random violations, making tables of the exposure to the community alerts by each covariate. Based on the exposure, there are no structural violations of positivity (exposure possible for all combinations of individual and group level covariates).
+
+```{r}
+# ----------------------------------------
+# 5. Assess random violations of positivity
+# ----------------------------------------
+# Table Function
+make_combined_table <- function(data, treatment_var, covariates, digits = 2) {
+  
+  treatment_var <- rlang::ensym(treatment_var)
+  
+  # Pivot all covariates into long format
+  long_data <- data %>%
+    pivot_longer(
+      cols = all_of(covariates),
+      names_to = "variable",
+      values_to = "level"
+    ) %>%
+    mutate(level = as.character(level))
+  
+  # Count by treatment + totals
+  tab <- long_data %>%
+    count(variable, level, !!treatment_var) %>%
+    pivot_wider(
+      names_from = !!treatment_var,
+      values_from = n,
+      values_fill = 0
+    )
+  
+  # Rename treatment columns (assumes 0/1)
+  tab <- tab %>%
+    rename(
+      Untreated = `0`,
+      Treated   = `1`
+    )
+  
+  # Add totals
+  tab <- tab %>%
+    mutate(
+      Total = Untreated + Treated
+    )
+  
+  # percentages 
+  tab <- tab %>%
+    group_by(variable) %>%
+    mutate(
+      Untreated = paste0(Untreated, " (", round(Untreated / sum(Untreated) * 100, digits), "%)"),
+      Treated   = paste0(Treated, " (", round(Treated / sum(Treated) * 100, digits), "%)"),
+      Total     = paste0(Total, " (", round(Total / sum(Total) * 100, digits), "%)")
+    ) %>%
+    ungroup()
+  
+  tab %>%
+    arrange(variable, level)
+}
+
+table_combined <- make_combined_table(
+  data = nodes,
+  treatment_var = treatment,
+  covariates = c(
+    "posneg", "share", "education", "employment", "date"
+  )
+)
+
+table_combined
+
+make_continuous_table <- function(data, 
+                                  treatment_var, 
+                                  cont_vars, 
+                                  digits = 2, 
+                                  show_sd = TRUE) {
+  
+  treatment_var <- rlang::ensym(treatment_var)
+  
+  map_dfr(cont_vars, function(var) {
+    
+    var_sym <- rlang::sym(var)
+    
+    # Means
+    untreated_mean <- data %>%
+      filter(!!treatment_var == 0) %>%
+      summarise(m = mean(!!var_sym, na.rm = TRUE)) %>%
+      pull(m)
+    
+    treated_mean <- data %>%
+      filter(!!treatment_var == 1) %>%
+      summarise(m = mean(!!var_sym, na.rm = TRUE)) %>%
+      pull(m)
+    
+    overall_mean <- mean(data[[var]], na.rm = TRUE)
+    
+    if (show_sd) {
+      untreated_sd <- data %>%
+        filter(!!treatment_var == 0) %>%
+        summarise(s = sd(!!var_sym, na.rm = TRUE)) %>%
+        pull(s)
+      
+      treated_sd <- data %>%
+        filter(!!treatment_var == 1) %>%
+        summarise(s = sd(!!var_sym, na.rm = TRUE)) %>%
+        pull(s)
+      
+      overall_sd <- sd(data[[var]], na.rm = TRUE)
+      
+      tibble(
+        Variable = var,
+        Untreated = sprintf("%.2f (%.2f)", untreated_mean, untreated_sd),
+        Treated   = sprintf("%.2f (%.2f)", treated_mean, treated_sd),
+        Total     = sprintf("%.2f (%.2f)", overall_mean, overall_sd)
+      )
+      
+    } else {
+      
+      tibble(
+        Variable = var,
+        Untreated = round(untreated_mean, digits),
+        Treated   = round(treated_mean, digits),
+        Total     = round(overall_mean, digits)
+      )
+    }
+  })
+}
+
+table_continuous <- make_continuous_table(
+  data = nodes,
+  treatment_var = treatment,
+  cont_vars = c("avg_posneg", "avg_share", "avg_education", "avg_employment", "avg_date")
+)
+
+table_continuous
+
+```
+
+### Estimation using Inverse Probability Weighted Estimator (propensity score model)
+
+```{r}
+# -----------------------------
+# 5. IPW Estimator
+# -----------------------------
+
+#Fit treatment model
+mylogit <- glm(treatment ~ age10 + posneg + date + share + education + employment,
+               data = nodes, 
+               family = "binomial")
+
+#propensity score denominator
+denom.p <- predict(mylogit,type = "response")
+
+#stabilized weights
+#numerator
+numer.fit=glm(treatment~1,family=binomial(), data=nodes)
+numer.p=predict(numer.fit,type="response")
+
+#denominator
+
+#unstabilized weights
+nodes$w =ifelse(nodes$treatment==0,(1-denom.p),denom.p)
+#stabilized weights
+nodes$sw=ifelse(nodes$treatment==0,((1-numer.p)/(1-denom.p)),(numer.p/denom.p))
+
+#check distribution of stabilized weights
+#Mean around 1 
+#Deviation from 1 means possible model mispecification or positivity issue
+summary(nodes$sw)
+
+# IPW outcome model (marginal structural model) with robust variance
+# Causal Risk Ratio
+# Fit with stabilized weights
+gee_rr_ipw <- geeglm(
+  outcome ~ treatment,
+  weights = sw,
+  data = nodes,
+  id = id,
+  family = binomial(link = "log"),
+  corstr = "independence"
+)
+
+#Warning in eval(family$initialize) :
+  #non-integer #successes in a binomial glm!
+  #Warning OK because we weighted geeglm
+
+b_rr <- coef(gee_rr_ipw)["treatment"]
+se_rr <- sqrt(vcov(gee_rr_ipw)["treatment", "treatment"])
+
+rr <- exp(b_rr)
+rr_ci <- exp(b_rr + c(-1, 1) * 1.96 * se_rr)
+
+# Causal risk difference
+# Fit with stabilized weights
+gee_rd_ipw <- geeglm(
+  outcome ~ treatment,
+  weights = sw,
+  data = nodes,
+  id = id,
+  family = gaussian(link = "identity"),
+  corstr = "independence"
+)
+
+b_rd <- coef(gee_rd_ipw)["treatment"]
+se_rd <- sqrt(vcov(gee_rd_ipw)["treatment", "treatment"])
+
+rd <- b_rd
+rd_ci <- b_rd + c(-1, 1) * 1.96 * se_rd
+
+results_ipw <- data.frame(
+  measure = c("Risk ratio", "Risk difference"),
+  estimate = c(rr, rd),
+  lower_95_ci = c(rr_ci[1], rd_ci[1]),
+  upper_95_ci = c(rr_ci[2], rd_ci[2])
+)
+
+results_ipw$estimate <- round(results_ipw$estimate, 3)
+results_ipw$lower_95_ci <- round(results_ipw$lower_95_ci, 3)
+results_ipw$upper_95_ci <- round(results_ipw$upper_95_ci, 3)
+
+results_ipw
+
+
+```
+
+### Estimation using the G-computation (outcome model)
+
+```{r}
+
+# -----------------------------
+# 6. G-computation
+# -----------------------------
+
+# Function for G-computation
+# Save as a function so we can bootstrap to get confidence interval
+# Under SUTVA and IID, we sample each individual with replacement for the boot samples
+
+gcomp_est <- function(data) {
+  n <- nrow(data)
+
+  # original data
+  all <- data
+  all$interv <- -1
+
+  # counterfactual copy with A = 0
+  all.untr <- all
+  all.untr$interv    <- 0
+  all.untr$treatment <- 0
+  all.untr$outcome  <- NA
+
+  # counterfactual copy with A = 1
+  all.tr <- all
+  all.tr$interv    <- 1
+  all.tr$treatment <- 1
+  all.tr$outcome   <- NA
+
+  onesample <- as.data.frame(rbind(all, all.untr, all.tr))
+
+  # outcome model
+  # Use Binomial-Logit then take function of probabilities 
+  glm.obj <- glm(
+    outcome ~ treatment + age10 + posneg + date + share + education + employment,
+    data = onesample,
+    family = binomial(link = "logit")
+  )
+  summary(glm.obj)
+
+  onesample$meanY <- predict(glm.obj, newdata = onesample, type = "response")
+
+  m1 <- onesample$meanY[onesample$interv == 1]
+  m0 <- onesample$meanY[onesample$interv == 0]
+
+  risk1 <- mean(m1)
+  risk0 <- mean(m0)
+  rd <- risk1 - risk0
+  rr <- risk1 / risk0
+
+  c(risk1 = risk1, risk0 = risk0, rd = rd, rr = rr)
+}
+
+# Point estimates
+est <- gcomp_est(nodes)
+gcomp_rd <- est[3]
+gcomp_rr <- est[4]
+
+# Bootstrap CIs
+set.seed(123)
+B <- 1000 #Should be at least 1000 replicates for a bootstrap confidence interval
+
+#Note: we bootstrap individuals here ignoring the network
+#There are some instances that the model does not converge
+boot_out <- replicate(B, {
+  idx <- sample(seq_len(nrow(nodes)), replace = TRUE)
+  gcomp_est(nodes[idx, , drop = FALSE])
+})
+
+boot_out <- t(boot_out)
+
+ci <- apply(boot_out, 2, quantile, probs = c(0.025, 0.975), na.rm = TRUE)
+
+gcomp_results <- data.frame(
+  measure = c("Risk under A=1", "Risk under A=0", "Risk difference", "Risk ratio"),
+  estimate = est[c("risk1", "risk0", "rd", "rr")],
+  lower_95_ci = ci[1, c("risk1", "risk0", "rd", "rr")],
+  upper_95_ci = ci[2, c("risk1", "risk0", "rd", "rr")]
+)
+
+gcomp_results$estimate <- round(gcomp_results$estimate, 3)
+gcomp_results$lower_95_ci <- round(gcomp_results$lower_95_ci, 3)
+gcomp_results$upper_95_ci <- round(gcomp_results$upper_95_ci, 3)
+
+gcomp_results
+#save confidence intervals
+gcomp_rd_ci <- c(gcomp_results$lower_95_ci[3],gcomp_results$upper_95_ci[3])
+gcomp_rr_ci <- c(gcomp_results$lower_95_ci[4],gcomp_results$upper_95_ci[4])
+
+
+```
+
+### Estimation using an Augmented IPW Estimator (doubly-robust). Two estimators below - augmented IPW (DR1, Lunceford and Davidian 2004) and weighted regression estimator (DR2, Robins 2007).
+
+```{r}
+##################################################
+# 7. Doubly Robust Estimators
+##################################################
+
+# Outcome model for g-formula components used in DR1
+nodes_obs <- nodes
+nodes_obs$interv <- -1
+
+nodes_0 <- nodes
+nodes_0$interv <- 0
+nodes_0$treatment <- 0
+nodes_0$outcome <- NA
+
+nodes_1 <- nodes
+nodes_1$interv <- 1
+nodes_1$treatment <- 1
+nodes_1$outcome <- NA
+
+stacked <- rbind(nodes_obs, nodes_0, nodes_1)
+
+outcome_mod <- glm(
+  outcome ~ treatment + age10 + posneg + date + share + education + employment,
+  data = stacked,
+  family = binomial(link = "logit")
+)
+
+stacked$mean_outcome <- predict(outcome_mod, newdata = stacked, type = "response")
+
+nodes$m0 <- stacked$mean_outcome[stacked$interv == 0]
+nodes$m1 <- stacked$mean_outcome[stacked$interv == 1]
+nodes$denom.p <- denom.p
+
+# DR1: augmented IPW / Lunceford-Davidian
+dr1_risk1 <- mean(
+(
+nodes$treatment * nodes$outcome - (nodes$treatment - nodes$denom.p) * nodes$m1) / nodes$denom.p
+)
+
+dr1_risk0 <- mean(
+(
+(1 - nodes$treatment) * nodes$outcome + (nodes$treatment - nodes$denom.p) * nodes$m0) / (1 - nodes$denom.p)
+)
+
+dr1_rd <- dr1_risk1 - dr1_risk0
+dr1_rr <- dr1_risk1 / dr1_risk0
+
+# DR2: weighted regression / Robins
+nodes$ipw <- with(nodes, treatment / denom.p + (1 - treatment) / (1 - denom.p))
+
+dr2_rd_mod <- lm(
+  outcome ~ treatment + age10 + posneg +date + share + education + employment,
+  data = nodes,
+  weights = ipw
+)
+
+dr2_rr_mod <- glm(
+  outcome ~ treatment + age10 + posneg +date + share + education + employment,
+  data = nodes,
+  weights = ipw,
+  family = binomial(link = "logit")
+)
+
+#Warning in eval(family$initialize) :
+  #non-integer #successes in a binomial glm!
+  #Warning OK because we weighted glm
+
+# Causal risk difference
+
+nodes_1_dr <- nodes
+nodes_1_dr$treatment <- 1
+
+nodes_0_dr <- nodes
+nodes_0_dr$treatment <- 0
+
+dr2_rd_m1 <- predict(dr2_rd_mod, newdata = nodes_1_dr, type = "response")
+dr2_rd_m0 <- predict(dr2_rd_mod, newdata = nodes_0_dr, type = "response")
+dr2_rd <- mean(dr2_rd_m1) - mean(dr2_rd_m0)
+
+dr2_rr_m1 <- predict(dr2_rr_mod, newdata = nodes_1_dr, type = "response")
+dr2_rr_m0 <- predict(dr2_rr_mod, newdata = nodes_0_dr, type = "response")
+dr2_risk1 <- mean(dr2_rr_m1)
+dr2_risk0 <- mean(dr2_rr_m0)
+dr2_rr <- dr2_risk1 / dr2_risk0
+
+dr_results <- data.frame(
+  estimator = c("DR1", "DR1", "DR2", "DR2"),
+  measure = c("Risk difference", "Risk ratio", "Risk difference", "Risk ratio"),
+  estimate = c(dr1_rd, dr1_rr, dr2_rd, dr2_rr)
+)
+
+dr_results
+
+#save results
+
+dr1_rd <- dr_results$estimate[1]
+dr1_rr <- dr_results$estimate[2]
+dr2_rd <- dr_results$estimate[3]
+dr2_rr <- dr_results$estimate[4]
+
+```
+
+```{r}
+
+##################################################
+# 8. Doubly Robust Estimators - Bootstrap CIs
+##################################################
+# Under SUTVA and IID, we sample each individual with replacement for the boot samples
+#Turn into a function for DR1 and DR2 to bootstrap to get 95% CIs
+
+estimate_effects <- function(data) {
+  # -----------------------------
+  # G-computation
+  # -----------------------------
+  dat_obs <- data
+  dat_obs$interv <- -1
+
+  dat_0 <- data
+  dat_0$interv <- 0
+  dat_0$treatment <- 0
+  dat_0$outcome <- NA
+
+  dat_1 <- data
+  dat_1$interv <- 1
+  dat_1$treatment <- 1
+  dat_1$outcome <- NA
+
+  stacked <- rbind(dat_obs, dat_0, dat_1)
+
+  
+withCallingHandlers(
+  {
+    outcome_mod <- glm(
+    outcome ~ treatment + age10 + date + posneg + share + education + employment,
+    data = stacked,
+    family = binomial(link = "logit")
+        )
+  },
+  #suppress warning for weighting in the glm
+  warning = function(w) {
+    if (grepl("non-integer #successes in a binomial glm!", conditionMessage(w))) {
+      invokeRestart("muffleWarning")
+    }
+  }
+)
+  
+  stacked$mean_outcome <- predict(outcome_mod, newdata = stacked, type = "response")
+
+  m1 <- stacked$mean_outcome[stacked$interv == 1]
+  m0 <- stacked$mean_outcome[stacked$interv == 0]
+
+  g_risk1 <- mean(m1)
+  g_risk0 <- mean(m0)
+  g_rd <- g_risk1 - g_risk0
+  g_rr <- g_risk1 / g_risk0
+
+  data$m1 <- m1
+  data$m0 <- m0
+
+  # -----------------------------
+  # DR1: augmented IPW
+  # w is the propensity score P(treatment = 1 | L)
+  # -----------------------------
+  dr1_risk1 <- mean(
+  (
+  data$treatment * data$outcome - (data$treatment - data$denom.p) * data$m1) / data$denom.p
+  )
+
+  dr1_risk0 <- mean(
+  (
+  (1 - data$treatment) * data$outcome + (data$treatment - data$denom.p) * data$m0) / (1 - data$denom.p)
+  )
+
+  dr1_rd <- dr1_risk1 - dr1_risk0
+  dr1_rr <- dr1_risk1 / dr1_risk0
+
+  # -----------------------------
+  # DR2: weighted regression
+  # -----------------------------
+  ipw <- data$treatment / data$denom.p + (1 - data$treatment) / (1 - data$denom.p)
+  data$ipw <- ipw
+
+  wreg_rd <- lm(
+    outcome ~ treatment + age10 + date + posneg + share + education + employment,
+    data = data,
+    weights = ipw
+  )
+
+  withCallingHandlers(
+  {
+    wreg_rr <- glm(
+    outcome ~ treatment + age10 + date + posneg + share + education + employment,
+    data = data,
+    weights = ipw,
+    family = binomial(link = "logit")
+       )
+  },
+  #suppress warning for weighting in the glm
+  warning = function(w) {
+    if (grepl("non-integer #successes in a binomial glm!", conditionMessage(w))) {
+      invokeRestart("muffleWarning")
+    }
+  }
+)
+  
+  dat1 <- data
+  dat1$treatment <- 1
+
+  dat0 <- data
+  dat0$treatment <- 0
+
+  rd_m1 <- predict(wreg_rd, newdata = dat1, type = "response")
+  rd_m0 <- predict(wreg_rd, newdata = dat0, type = "response")
+  dr2_rd <- mean(rd_m1) - mean(rd_m0)
+
+  rr_m1 <- predict(wreg_rr, newdata = dat1, type = "response")
+  rr_m0 <- predict(wreg_rr, newdata = dat0, type = "response")
+  dr2_risk1 <- mean(rr_m1)
+  dr2_risk0 <- mean(rr_m0)
+  dr2_rr <- dr2_risk1 / dr2_risk0
+
+  c(
+    gcomp_rd = g_rd,
+    gcomp_rr = g_rr,
+    dr1_rd = dr1_rd,
+    dr1_rr = dr1_rr,
+    dr2_rd = dr2_rd,
+    dr2_rr = dr2_rr
+  )
+}
+
+set.seed(123)
+B <- 1000
+
+point_est <- estimate_effects(nodes)
+
+boot_est <- replicate(B, {
+  idx <- sample(seq_len(nrow(nodes)), replace = TRUE)
+  estimate_effects(nodes[idx, , drop = FALSE])
+})
+
+
+boot_est <- t(boot_est)
+
+ci <- apply(boot_est, 2, quantile, probs = c(0.025, 0.975), na.rm = TRUE)
+
+results_dr <- data.frame(
+  estimator = c("G-computation", "G-computation", "DR1", "DR1", "DR2", "DR2"),
+  measure = c("Risk difference", "Risk ratio",
+              "Risk difference", "Risk ratio",
+              "Risk difference", "Risk ratio"),
+  estimate = point_est[c("gcomp_rd", "gcomp_rr", "dr1_rd", "dr1_rr", "dr2_rd", "dr2_rr")],
+  lower_95_ci = ci[1, c("gcomp_rd", "gcomp_rr", "dr1_rd", "dr1_rr", "dr2_rd", "dr2_rr")],
+  upper_95_ci = ci[2, c("gcomp_rd", "gcomp_rr", "dr1_rd", "dr1_rr", "dr2_rd", "dr2_rr")]
+)
+
+results_dr$estimate <- round(results_dr$estimate, 3)
+results_dr$lower_95_ci <- round(results_dr$lower_95_ci, 3)
+results_dr$upper_95_ci <- round(results_dr$upper_95_ci, 3)
+
+results_dr
+dr1_rd_ci <- c(results_dr$lower_95_ci[3],results_dr$upper_95_ci[3])
+dr1_rr_ci <- c(results_dr$lower_95_ci[4],results_dr$upper_95_ci[4])
+dr2_rd_ci <- c(results_dr$lower_95_ci[5],results_dr$upper_95_ci[5])
+dr2_rr_ci <- c(results_dr$lower_95_ci[6],results_dr$upper_95_ci[6])
+
+# Suppressed: Warning in eval(family$initialize): non-integer #successes in a binomial glm!
+
+```
+
+```{r}
+#Code to output results to Latex and Forest Plot (optional)
+
+z <- qnorm(0.975)
+
+make_rr_row <- function(estimator, fit, term = "treatment") {
+  b <- coef(fit)[term]
+  se <- sqrt(vcov(fit)[term, term])
+  est <- exp(b)
+  ci <- exp(b + c(-1, 1) * z * se)
+
+  data.frame(
+    Estimator = estimator,
+    Measure = "Risk ratio",
+    Estimate = est,
+    LCL = ci[1],
+    UCL = ci[2]
+  )
+}
+
+make_rd_row <- function(estimator, fit, term = "treatment") {
+  b <- coef(fit)[term]
+  se <- sqrt(vcov(fit)[term, term])
+  ci <- b + c(-1, 1) * z * se
+
+  data.frame(
+    Estimator = estimator,
+    Measure = "Risk difference",
+    Estimate = b,
+    LCL = ci[1],
+    UCL = ci[2]
+  )
+}
+
+make_manual_row <- function(estimator, measure, est, ci) {
+  data.frame(
+    Estimator = estimator,
+    Measure = measure,
+    Estimate = est,
+    LCL = ci[1],
+    UCL = ci[2]
+  )
+}
+
+results <- bind_rows(
+  make_rr_row("Unadjusted", model_rr_unadj),
+  make_rd_row("Unadjusted", model_rd_unadj),
+
+  make_rr_row("Covariate adjusted", gee_rr),
+  make_rd_row("Covariate adjusted", gee_rd),
+
+  make_rr_row("IPW", gee_rr_ipw),
+  make_rd_row("IPW", gee_rd_ipw),
+
+  make_manual_row("G-computation", "Risk ratio", gcomp_rr, gcomp_rr_ci),
+  make_manual_row("G-computation", "Risk difference", gcomp_rd, gcomp_rd_ci),
+
+  make_manual_row("DR1", "Risk ratio", dr1_rr, dr1_rr_ci),
+  make_manual_row("DR1", "Risk difference", dr1_rd, dr1_rd_ci),
+
+  make_manual_row("DR2", "Risk ratio", dr2_rr, dr2_rr_ci),
+  make_manual_row("DR2", "Risk difference", dr2_rd, dr2_rd_ci)
+)
+
+
+table_wide <- results %>%
+  mutate(
+    Estimate = round(Estimate, 3),
+    LCL = round(LCL, 3),
+    UCL = round(UCL, 3),
+    value = sprintf("%.3f (%.3f, %.3f)", Estimate, LCL, UCL)
+  ) %>%
+  select(Estimator, Measure, value) %>%
+  pivot_wider(names_from = Measure, values_from = value) %>%
+  select(Estimator, `Risk ratio`, `Risk difference`)
+
+latex_tab <- kable(
+  table_wide,
+  format = "latex",
+  booktabs = TRUE,
+  escape = FALSE,
+  align = c("l", "l", "l")
+)
+
+slide_tex <- paste0(
+  "\\begin{frame}{Effect Estimates}\n",
+  "\\scriptsize\n",
+  "\\centering\n",
+  latex_tab,
+  "\n\\end{frame}\n"
+)
+
+writeLines(slide_tex, "effect_estimates_slide.tex")
+
+# Keep only causal estimators for the forest plot
+
+forest_data <- results %>%
+  filter(
+    Estimator %in% c(
+      "Unadjusted",
+      "Covariate adjusted",
+      "IPW",
+      "G-computation",
+      "DR1",
+      "DR2"
+    )
+  ) %>%
+  mutate(
+    Estimator = factor(
+      Estimator,
+      levels = rev(c(
+        "Unadjusted",
+        "Covariate adjusted",
+        "IPW",
+        "G-computation",
+        "DR1",
+        "DR2"
+      ))
+    )
+  )
+
+# Colors matched to the slide
+uri_teal <- "#349B9B"
+uri_navy <- "#0B2E63"
+uri_gray <- "#B8B8B8"
+uri_light_gray <- "#F2F4F5"
+
+estimator_colors <- c(
+  "Unadjusted" = uri_navy,
+  "Covariate adjusted" = uri_teal,
+  "IPW" = "#5CB8B2",
+  "G-computation" = "#2F8F8F",
+  "DR1" = "#0B2E63",
+  "DR2" = "#6AA6A6"
+)
+
+forest_rr <- forest_data %>%
+  filter(Measure == "Risk ratio") %>%
+  ggplot(aes(x = Estimate, y = Estimator, color = Estimator)) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = uri_navy, linewidth = 0.5) +
+  geom_errorbarh(aes(xmin = LCL, xmax = UCL), height = 0.15, linewidth = 0.8) +
+  geom_point(size = 2.2) +
+  scale_color_manual(values = estimator_colors, drop = FALSE) +
+  labs(
+    title = "Risk Ratio",
+    x = "Estimate and 95% CI",
+    y = NULL
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(color = uri_navy, face = "bold"),
+    axis.text.y = element_text(color = uri_navy, size = 14),
+    axis.title.x = element_text(color = uri_navy),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_line(color = uri_light_gray),
+    legend.position = "none"
+  )
+
+forest_rd <- forest_data %>%
+  filter(Measure == "Risk difference") %>%
+  ggplot(aes(x = Estimate, y = Estimator, color = Estimator)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = uri_navy, linewidth = 0.5) +
+  geom_errorbarh(aes(xmin = LCL, xmax = UCL), height = 0.15, linewidth = 0.8) +
+  geom_point(size = 2.2) +
+  scale_color_manual(values = estimator_colors, drop = FALSE) +
+  labs(
+    title = "Risk Difference",
+    x = "Estimate and 95% CI",
+    y = NULL
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(color = uri_navy, face = "bold"),
+    axis.text.y = element_text(color = uri_navy,size = 14),
+    axis.title.x = element_text(color = uri_navy),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_line(color = uri_light_gray),
+    legend.position = "none"
+  )
+
+ggsave(
+  filename = "effect_estimates_forest_plot_rr.pdf",
+  plot = forest_rr,
+  width = 8,
+  height = 7
+)
+
+ggsave(
+  filename = "effect_estimates_forest_plot_rd.pdf",
+  plot = forest_rd,
+  width = 8,
+  height = 7
+)
+```
+
+### Assess the fit of the propensity score model using overlap plots and standardized mean differences.
+
+```{r}
+##################################################
+# 9. Assess the propensity score model
+##################################################
+
+# IPW from propensity score
+nodes$ipw <- with(nodes, treatment / denom.p + (1 - treatment) / (1 - denom.p))
+
+# Density plot of propensity scores by treatment group
+ggplot(nodes, aes(x = denom.p, color = factor(treatment), fill = factor(treatment))) +
+  geom_density(alpha = 0.25) +
+  labs(
+    x = "Propensity score",
+    y = "Density",
+    color = "Treatment",
+    fill = "Treatment",
+    title = "Propensity score overlap by treatment group"
+  ) +
+  theme_minimal()
+
+#Standardized Mean Differences
+bal <- bal.tab(
+  treatment ~ age10 + date + posneg + share + education + employment,
+  data = nodes,
+  weights = nodes$ipw,
+  un = TRUE,
+  method = "weighting",
+  estimand = "ATE"
+)
+
+print(bal)
+
+smd_table <- bal$Balance
+smd_table[, c("Diff.Un", "Diff.Adj")]
+
+#Love Plot
+
+love.plot(
+  bal,
+  stat = "mean.diffs",
+  abs = TRUE,
+  thresholds = c(m = 0.1),
+  var.order = "unadjusted",
+  title = "Standardized mean differences before and after IPW"
+)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
