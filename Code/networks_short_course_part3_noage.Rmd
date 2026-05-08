@@ -1,0 +1,682 @@
+---
+title: 'Networks and Causal Inference Short Course: Part 3'
+author: "TingFang Lee, Ashley Buchanan, URI Avenir Team"
+date: "2026-04-30"
+output: pdf_document
+---
+
+### Using Data from the Transmission Reduction Intervention Project in Athens, Greece {.unnumbered}
+
+\### Download the data and load it into R Studio
+
+This is a simulated toy dataset made for this course. It is based on data collected from the Transmission Reduction Intervention Project in Athens Greece. Public data here: <https://www.icpsr.umich.edu/web/NAHDAP/studies/39059/versions/V2/staff>
+
+Read more: <https://pubmed.ncbi.nlm.nih.gov/27917890/>
+
+Load packages and function script...
+
+```{r message=FALSE}
+# -----------------------------
+# 1. Read data and functions into R
+# -----------------------------
+
+# Set the working directory to the current file's folder
+# install.packages("rstudioapi")
+library(rstudioapi)
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+getwd() # verify the change
+
+library(lme4)
+library(plyr)
+library(dplyr)
+library(igraph)
+library(numDeriv)
+library(gtools)
+library(doParallel)
+library(foreach)
+library(knitr)
+library(kableExtra)
+library(ggplot2)
+library(forcats)
+rm(list = ls())
+
+no_cores <- detectCores() - 1  
+registerDoParallel(cores=no_cores)  
+
+#Can source GitHub page 
+#source("https://github.com/uri-ncipher/Nearest-Neighbor-estimators/blob/main/functions.R?raw=TRUE")
+source("IPW_functions.R")
+source("gcomp_dr_v2.R") #Ting-Fang removed warnings for bootstrap
+```
+
+### Data Preparation
+
+Read in the synthetic nodes and edges data sets for creating the simulated network.
+
+```{r}
+# -----------------------------
+# 2. Data Preparation
+# -----------------------------
+
+nodes <- read.csv("../TRIP_network_simulation/TRIPsim_nodes.csv")
+edges <- read.csv("../TRIP_network_simulation/TRIPsim_edges.csv")
+
+net0=graph_from_data_frame(d=edges, vertices = nodes, directed=F)  # create network based on the nodes and edges data.
+```
+
+### Network visualization
+
+```{r}
+
+# -----------------------------
+# 3. Network Visualizaiton
+# -----------------------------
+
+# plot the network generated above
+plot(net0, vertex.size=1, vertex.label=NA, vertex.color="cadetblue3", vertex.frame.color="cadetblue3")
+```
+
+### Prepare the data for modeling
+
+```{r}
+
+# -----------------------------
+# 3. Data Preparation for Modeling
+# -----------------------------
+
+# Save the number of individuals (nodes) and number of components
+n=length(V(net0))       # number of individuals
+m=components(net0)$no   # number of components
+
+# generate a dataset with three columns, the first column is participant id (node id), 
+# the second column is number of nearest neighbors for each participant (is also node degree), 
+# the third column indicate which component the participant is in.
+df=data.frame(id=1:n, na=unlist(lapply(1:n, num_neighbors, net=net0)),
+                component=components(net0)$membership) 
+
+# assign treatment, outcome, and baseline covariates to data
+df$treatment=nodes$treatment
+df$outcome=nodes$outcome
+df$age=nodes$age
+df$age10=nodes$age/10 #age per 10 years
+df$agebin=ifelse(nodes$age>35,1,0) #age >35 years old
+df$posneg=nodes$posneg
+df$date=nodes$date
+df$share=nodes$share
+df$education=nodes$education
+df$employment=nodes$employment
+df$na_a= unlist(lapply(1:n, trt_neighbors, net=net0))
+df$notna_a=df$na-df$na_a
+
+# five covariates, excluding age
+base_covariate=c("posneg", "date", "share", "education", "employment")
+
+df$avg_posneg = nodes$avg_posneg
+df$avg_date = nodes$avg_date
+df$avg_share = nodes$avg_share
+df$avg_education = nodes$avg_education
+df$avg_employment = nodes$avg_employment
+
+avg_covariate=c("avg_posneg", "avg_date", "avg_share", "avg_education","avg_employment")
+```
+
+## Modeling
+
+In this section, we will apply both IPW1 and IPW2 estimators for the average potential outcomes and corresponding causal effects. An individual's exposure/treatment and allocation strategy $\alpha$ jointly determine the average potential outcome (allocation strategy represents the probability that individuals in nearest neighbors set receiving the exposure/treatment in the counterfactual scenario, so it is a numeric value between 0 and 1). For each estimator, the R programs will output the **point estimation and the estimated variance of average potential outcomes** $\boldsymbol{\widehat{Y}(1, \alpha), \widehat{Y}(0, \alpha), \widehat{Y}(\alpha)}$ under three different allocation strategies $\alpha$ (i.e., 0.25, 0.50, and 0.75), respectively. Also, the R program will output the **point estimation and estimated variance of four causal effects: Direct** (DE), **Indirect** (IE), **Total** (TE), and **Overall effect** (OE).
+
+Equations for calculating the four causal effects are:
+
+- ${\widehat{DE} = \widehat{Y}(1, \alpha) - \widehat{Y}(0, \alpha)}$
+- ${\widehat{IE} = \widehat{Y}(0, \alpha_0) - \widehat{Y}(0, \alpha_1)}$
+- ${\widehat{TE} = \widehat{Y}(1, \alpha_0) - \widehat{Y}(0, \alpha_1)}$
+- ${\widehat{OE} = \widehat{Y}(\alpha_0) - \widehat{Y}(\alpha_1)}$,
+
+where $\alpha_0$, $\alpha_1$ both represents allocation strategies, and $\alpha_0 \neq  \alpha_1$ (Note: The associated [paper](https://arxiv.org/abs/2108.04865) compared the estimated average potential outcomes with $\alpha_1$ to $\alpha_0$ for the indirect, total, and overall effects. The code here compared the estimated average potential outcomes with $\alpha_0$ to $\alpha_1$ for the indirect, total, and overall effects). Users can set any values between 0 and 1 for $\alpha_0$ and $\alpha_1$. If given $\alpha$ is a vector, then the causal contrasts will produce pairwise comparisons in the sequential order of the values in $\alpha$. For example, if $\alpha = c(0.75, 0.25, 0.50)$, the contrasts for spillover effects will compare
+
+- 
+
+  (i) $\alpha_0 = 0.75$ versus $\alpha_1 = 0.25$;
+
+- 
+
+  (ii) $\alpha_0 = 0.75$ versus $\alpha_1 = 0.50$;
+
+- 
+
+  (iii) $\alpha_0 = 0.25$ versus $\alpha_1 = 0.50$.
+
+### IPW1
+
+Using IPW1 to estimate the average potential outcomes and causal effects under allocation strategies $\alpha$.
+
+```{r}
+
+# -----------------------------
+# 4a. IPW1 Estimator
+# -----------------------------
+
+alpha=c(0.5, 0.4, 0.3, 0.2)  # set allocation strategies
+
+base_covariate=c("posneg", "date", "share", "education", "employment")
+avg_covariate=c("avg_posneg", "avg_date", "avg_share", "avg_education","avg_employment")
+
+IPW1 <- IPW_1_model(df, base_covariate, alpha)
+IPW1
+```
+
+In the output above,
+
+- The **section [[1]]** displays the point estimates (type = "point estimate" in the output) and estimated variances (type = "variance" in the output) for the average potential outcomes under three different allocation strategies (i.e., $\alpha = 0.25, 0.50, 0.75$) and each individual exposure ($a = 0, a=1$, and margin). "Margin" is the average potential outcomes for a particular allocation strategy, regardless of individual exposure status.
+- The **section [[2]]** displays the point estimates (type = "Direct", "Indirect", "Total", "Overall" in the output) and estimated variances (type = "Var DE", "Var IE", "Var TE", "Var OE" in the output) of four causal effects: direct, indirect, total and overall effects, corresponding to particular allocation strategies $(\alpha_0$ and $\alpha_1)$. The estimated values are shown in "estimation" column in the output above.
+
+### IPW2
+
+Using IPW2 to estimate the average potential outcomes and causal effects under allocation strategies $\alpha$.
+
+```{r}
+
+# -----------------------------
+# 4b. IPW2 Estimator
+# -----------------------------
+
+base_covariate=c("posneg", "date", "share", "education", "employment")
+avg_covariate=c("avg_posneg", "avg_date", "avg_share", "avg_education","avg_employment")
+
+alpha=c(0.5, 0.4, 0.3, 0.2)  # set allocation strategies
+
+formula_1=paste("cbind(na_a, notna_a)", "~", "treatment", "+", 
+                paste(base_covariate, collapse = "+"), "+", 
+                paste(avg_covariate, collapse = "+"))
+formula_2=paste("treatment", "~", paste(base_covariate, collapse = "+"))
+M1=glm(formula_1, family = binomial(link = "logit"), data=df)
+M2=glm(formula_2, family = binomial(link = "logit"), data=df)
+
+IPW2 <- IPW_2_model(df, M1, M2, alpha)
+IPW2
+```
+
+In the output above,
+
+- The **section [[1]]** displays the point estimates (type = "point estimate" in the output) and estimated variances (type = "variance" in the output) for the average potential outcomes under three different allocation strategies (i.e., $\alpha = 0.75, 0.50, 0.25$) and each individual exposure ($a = 0, a=1$, and margin). "Margin" is the average potential outcomes for a particular allocation strategy, regardless of individual exposure status.
+- The **section [[2]]** displays the point estimates (type = "Direct", "Indirect", "Total", "Overall" in the output) and estimated variances (type = "Var DE", "Var IE", "Var TE", "Var OE" in the output) of four causal effects: direct, indirect, total and overall effects, corresponding to particular allocation strategies $(\alpha_0$ and $\alpha_1)$. The estimated values are shown in "estimation" column in the output above.
+
+Now, we provide example code for an outcome-model based approach, g-computation. We use assumptions similar to IPW2 regarding the covariates for confounding from an individual's contacts in the network. We obtain 95% confidence intervals using a bootstrap on each individual and the summary information for their contacts' exposures and covariates.
+
+```{r}
+
+# ----------------------------------------------------------
+# 4c. G-computation Estimator (similar assumptions to IPW2)
+# ----------------------------------------------------------
+
+#Obtain G-computation estimates with bootstrap CIs
+#Uses similar assumptions for interference as IPW2
+#Bootstrap unit is each individual and the information for their contacts
+
+alpha <- c(0.5, 0.4, 0.3, 0.2)
+
+res_gcomp <- gcomp_with_bootstrap(
+  data = df,
+  alpha = alpha,
+  z_covariates = base_covariate,
+  zn_covariates = avg_covariate,
+  B = 1000, 
+  seed = 2026
+)
+
+res_gcomp$results
+```
+
+Now, we provide example code for an doubly-robust approach, augmented IPW. We use assumptions similar to IPW2 regarding the covariates for confounding from an individual's contacts in the network. We obtain 95% confidence intervals using a bootstrap on each individual and the summary information for their contacts' exposures and covariates.
+
+```{r}
+
+# ----------------------------------------------------------
+# 4d. Augmented IPW Estimator (doubly robust (DR1))
+# ----------------------------------------------------------
+
+#Obtain DR1 Estimates with Bootstrap CIs
+#Uses similar assumptions for interference as IPW2
+#Bootstrap unit is each individual and the information for their contacts
+alpha=c(0.5, 0.4, 0.3, 0.2)  # set allocation strategies
+
+res_dr <- dr_with_bootstrap(
+  data = df,
+  alpha = alpha,
+  z_covariates = base_covariate,
+  zn_covariates = avg_covariate,
+  B = 1000, 
+  seed = 2026
+)
+res_dr$results 
+```
+
+Lastly, we perform assessment of the propensity score in the presence of interference.
+
+```{r}
+
+# ----------------------------------------------------------
+# 5. Assessing the fit of the generalized propensity scores
+# ----------------------------------------------------------
+
+### Check covariate balance for generalized propensity score: Fit a model on each covariate, then include the individual exposure, group level exposure, and propensity scores, compare to a model with only the propensity scores
+
+##### check propensity score balance for IPW2
+mat_1 = as.matrix(cbind(1, df[, row.names(coef(summary(M1)))[-1]])) # neighbors' treatment
+mat_2 = as.matrix(cbind(1, df[, row.names(coef(summary(M2)))[-1]])) # Individual treatment
+
+group_ps <- plogis(mat_1 %*% coef(M1))
+ind_ps <- plogis(mat_2 %*% coef(M2))
+df$group_ps_ipw2 <- group_ps
+df$ind_ps_ipw2 <- ind_ps #Ke, should this be 1-ps for those not exposed?
+
+### Step 1: check individual-level propensity score balance
+# Note: Compare two models w/ and w/o treatment: 
+#       (1) ind_covariate ~ ind_treatment + ind_ps_ipw2; 
+#       (2) ind_covariate ~ ind_ps_ipw2
+ipw2_balance <- data.frame()
+for (i in 1:length(base_covariate)) {
+  f1 <- paste0(base_covariate[i], " ~ ind_ps_ipw2")
+  f2 <- paste0(base_covariate[i], " ~ treatment + ind_ps_ipw2")
+
+  if (base_covariate[i] == "age10"){
+    model_reduced <- glm(f1, data = df, family = gaussian)
+    model_full    <- glm(f2, data = df, family = gaussian("identity"))
+  } else {
+    model_reduced <- glm(f1, data = df, family = binomial("logit"))
+    model_full    <- glm(f2, data = df, family = binomial("logit"))
+  }
+  res_temp <- lmtest::lrtest(model_reduced, model_full)
+  
+  ipw2_balance <- rbind(ipw2_balance,
+                       c(f1, f2, round(res_temp$Chisq[2], 4), round(res_temp$`Pr(>Chisq)`[2], 4))
+  )
+}
+#Ke, the output for IPW2 - can you fix the column labels?
+  
+
+### Step 2: check group-level propensity score balance
+# Note: Compare two models w/ and w/o treatment:
+#       (1) group_covariate ~ group_treatment + group_ps;
+#       (2) group_covariate ~ group_ps.
+
+for (i in 1:length(avg_covariate)) {
+  f1 <- paste0(avg_covariate[i], " ~ group_ps_ipw2")
+  f2 <- paste0(avg_covariate[i], " ~ cbind(na_a, notna_a) + group_ps_ipw2")
+  
+  model_reduced <- glm(f1, data = df)
+  model_full    <- glm(f2, data = df)
+  
+  res_temp <- lmtest::lrtest(model_reduced, model_full)
+  
+  ipw2_balance <- rbind(ipw2_balance,
+                       c(f1, f2, round(res_temp$Chisq[2], 4), round(res_temp$`Pr(>Chisq)`[2], 4))
+  )
+}
+colnames(ipw2_balance) <- c("Reduced model", "Full model", "Chisq", "Pr(>Chisq)")
+ipw2_balance
+
+
+```
+
+```{r}
+#Optional: Format Latex Table for output of each estimation approach
+#Create forest plot
+library(dplyr)
+library(forcats)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+
+z <- qnorm(0.975)
+
+##################################################
+# 1. Result object helper
+##################################################
+
+conflicts_prefer(dplyr::filter) # filter will now always use dplyr, even if MASS is loaded
+conflicts_prefer(dplyr::count)
+
+make_result_object <- function(x) {
+  if (is.list(x) && !is.data.frame(x)) {
+    df_idx <- which(sapply(x, function(y) {
+      is.data.frame(y) &&
+        all(c("estimation", "alpha0", "alpha1", "type") %in% names(y))
+    }))
+
+    if (length(df_idx) == 0) {
+      stop("No data frame with columns estimation, alpha0, alpha1, and type was found.")
+    }
+
+    x <- x[[df_idx[1]]]
+  }
+
+  if (!all(c("estimation", "alpha0", "alpha1", "type") %in% names(x))) {
+    stop("Input must contain columns: estimation, alpha0, alpha1, type.")
+  }
+
+  est_rows <- x %>%
+    filter(!grepl("^Var", type)) %>%
+    mutate(
+      effect_key = case_when(
+        type == "Direct" ~ "DE",
+        type == "Indirect" ~ "IE",
+        type == "Total" ~ "TE",
+        type == "Overall" ~ "OE",
+        TRUE ~ type
+      )
+    )
+
+  var_rows <- x %>%
+    filter(grepl("^Var", type)) %>%
+    mutate(
+      effect_key = gsub("^Var\\s+", "", type),
+      variance = estimation
+    ) %>%
+    select(alpha0, alpha1, effect_key, variance)
+
+  results <- est_rows %>%
+    left_join(
+      var_rows,
+      by = c("alpha0", "alpha1", "effect_key")
+    ) %>%
+    mutate(
+      se = sqrt(variance),
+      lower = estimation - z * se,
+      upper = estimation + z * se
+    ) %>%
+    select(estimation, alpha0, alpha1, type, lower, upper)
+
+  list(results = results)
+}
+
+##################################################
+# 2. Standardize alpha display by estimator/effect
+##################################################
+
+prep_effect_results <- function(results, estimator_name) {
+  out <- results %>%
+    filter(!grepl("^Var", type)) %>%
+    mutate(
+      estimator = estimator_name,
+      effect = case_when(
+        type == "Direct" ~ "Direct",
+        type == "Indirect" ~ "Indirect",
+        type == "Total" ~ "Total",
+        type == "Overall" ~ "Overall",
+        TRUE ~ type
+      )
+    )
+
+  # G-comp and DR store coverage columns reversed relative to display.
+  if (estimator_name %in% c("G-comp", "DR")) {
+    out <- out %>%
+      mutate(
+        raw_alpha1 = alpha0,
+        raw_alpha0 = alpha1
+      )
+  } else {
+    out <- out %>%
+      mutate(
+        raw_alpha1 = alpha1,
+        raw_alpha0 = alpha0
+      )
+  }
+
+  out %>%
+    mutate(
+      display_alpha1 = pmax(raw_alpha1, raw_alpha0),
+      display_alpha0 = pmin(raw_alpha1, raw_alpha0),
+      contrast = paste0("(", display_alpha1, ", ", display_alpha0, ")")
+    ) %>%
+    filter(
+      case_when(
+        effect == "Direct" ~ display_alpha1 == display_alpha0,
+        effect %in% c("Indirect", "Total") ~ display_alpha1 > display_alpha0,
+        effect == "Overall" ~ TRUE,
+        TRUE ~ TRUE
+      )
+    )
+}
+
+##################################################
+# 3. LaTeX table helper
+##################################################
+
+make_latex_effect_table <- function(results,
+                                    estimator_name,
+                                    caption = "Estimated causal effects",
+                                    digits = 3) {
+  table_df <- prep_effect_results(results, estimator_name) %>%
+    mutate(
+      effect = factor(effect, levels = c("Direct", "Indirect", "Total", "Overall")),
+      estimate = round(estimation, digits),
+      ci = ifelse(
+        is.na(lower) | is.na(upper),
+        "",
+        paste0(
+          "(", round(lower, digits), ", ",
+          round(upper, digits), ")"
+        )
+      )
+    ) %>%
+    arrange(effect, desc(display_alpha1), desc(display_alpha0)) %>%
+    select(
+      Effect = effect,
+      `$(\\alpha_1, \\alpha_0)$` = contrast,
+      `Point estimate` = estimate,
+      `95\\% CI` = ci
+    )
+
+  direct_n <- sum(table_df$Effect == "Direct")
+  indirect_n <- sum(table_df$Effect == "Indirect")
+  total_n <- sum(table_df$Effect == "Total")
+  overall_n <- sum(table_df$Effect == "Overall")
+
+  tab <- table_df %>%
+    kable(
+      format = "latex",
+      booktabs = TRUE,
+      escape = FALSE,
+      caption = caption,
+      align = c("l", "c", "c", "c")
+    ) %>%
+    kable_styling(latex_options = c("hold_position"))
+
+  start <- 1
+
+  if (direct_n > 0) {
+    tab <- tab %>% pack_rows("Direct effects", start, start + direct_n - 1, italic = TRUE)
+    start <- start + direct_n
+  }
+
+  if (indirect_n > 0) {
+    tab <- tab %>% pack_rows("Indirect effects", start, start + indirect_n - 1, italic = TRUE)
+    start <- start + indirect_n
+  }
+
+  if (total_n > 0) {
+    tab <- tab %>% pack_rows("Total effects", start, start + total_n - 1, italic = TRUE)
+    start <- start + total_n
+  }
+
+  if (overall_n > 0) {
+    tab <- tab %>% pack_rows("Overall effects", start, start + overall_n - 1, italic = TRUE)
+  }
+
+  tab
+}
+
+##################################################
+# 4. Create result objects
+##################################################
+
+res_ipw1 <- make_result_object(IPW1)
+res_ipw2 <- make_result_object(IPW2)
+
+res_gcomp <- if (exists("res_gcomp") && "results" %in% names(res_gcomp)) {
+  res_gcomp
+} else {
+  make_result_object(gcomp_table)
+}
+
+res_dr <- if (exists("res_dr") && "results" %in% names(res_dr)) {
+  res_dr
+} else {
+  make_result_object(dr_table)
+}
+
+##################################################
+# 5. Create LaTeX tables
+##################################################
+
+ipw1_tab <- make_latex_effect_table(
+  res_ipw1$results,
+  estimator_name = "IPW1",
+  caption = "IPW1 estimates of causal effects"
+)
+
+ipw2_tab <- make_latex_effect_table(
+  res_ipw2$results,
+  estimator_name = "IPW2",
+  caption = "IPW2 estimates of causal effects"
+)
+
+gcomp_tab <- make_latex_effect_table(
+  res_gcomp$results,
+  estimator_name = "G-comp",
+  caption = "G-computation estimates of causal effects"
+)
+
+dr_tab <- make_latex_effect_table(
+  res_dr$results,
+  estimator_name = "DR",
+  caption = "Doubly robust estimates of causal effects"
+)
+
+cat(ipw1_tab, file = "ipw1_effects_table.tex")
+cat(ipw2_tab, file = "ipw2_effects_table.tex")
+cat(gcomp_tab, file = "gcomp_effects_table.tex")
+cat(dr_tab, file = "dr_effects_table.tex")
+
+##################################################
+# 6. Forest plot data
+##################################################
+
+estimator_levels <- c("IPW1", "IPW2", "G-comp", "DR")
+
+df <- bind_rows(
+  prep_effect_results(res_ipw1$results, "IPW1"),
+  prep_effect_results(res_ipw2$results, "IPW2"),
+  prep_effect_results(res_gcomp$results, "G-comp"),
+  prep_effect_results(res_dr$results, "DR")
+) %>%
+  mutate(
+    estimator = factor(estimator, levels = estimator_levels),
+    effect = factor(effect, levels = c("Direct", "Indirect", "Total", "Overall"))
+  )
+
+# Optional check: verify all estimator/effect/contrast combinations are present.
+df %>%
+  count(estimator, effect, contrast) %>%
+  arrange(estimator, effect, contrast)
+
+##################################################
+# 7. Forest plot helper
+##################################################
+
+estimator_colors <- c(
+  "IPW1" = "#009E73",
+  "IPW2" = "#0072B2",
+  "G-comp" = "#56B4E9",
+  "DR" = "#E69F00"
+)
+
+estimator_shapes <- c(
+  "IPW1" = 15,
+  "IPW2" = 16,
+  "G-comp" = 17,
+  "DR" = 18
+)
+
+estimator_offsets <- c(
+  "IPW1" = 0.27,
+  "IPW2" = 0.09,
+  "G-comp" = -0.09,
+  "DR" = -0.27
+)
+
+make_effect_forest_plot <- function(plot_data, effect_name) {
+  plot_data <- plot_data %>%
+    filter(effect == effect_name)
+
+  contrast_map <- plot_data %>%
+    distinct(contrast, display_alpha1, display_alpha0) %>%
+    arrange(desc(display_alpha1), desc(display_alpha0)) %>%
+    mutate(contrast_id = row_number())
+
+  plot_data <- plot_data %>%
+    left_join(
+      contrast_map,
+      by = c("contrast", "display_alpha1", "display_alpha0")
+    ) %>%
+    mutate(
+      y_pos = contrast_id + estimator_offsets[as.character(estimator)]
+    )
+
+  ggplot(
+    plot_data,
+    aes(color = estimator, shape = estimator)
+  ) +
+    geom_vline(
+      xintercept = 0,
+      linetype = "dashed",
+      linewidth = 0.6,
+      color = "gray30"
+    ) +
+    geom_segment(
+      aes(x = lower, xend = upper, y = y_pos, yend = y_pos),
+      linewidth = 0.8
+    ) +
+    geom_point(
+      aes(x = estimation, y = y_pos),
+      size = 2.2
+    ) +
+    scale_y_continuous(
+      breaks = contrast_map$contrast_id,
+      labels = contrast_map$contrast
+    ) +
+    scale_color_manual(values = estimator_colors, breaks = estimator_levels) +
+    scale_shape_manual(values = estimator_shapes, breaks = estimator_levels) +
+    labs(
+      title = paste(effect_name, "Effects"),
+      x = "Estimate (95% CI)",
+      y = expression(paste("Allocation (", alpha[1], ", ", alpha[0], ")")),
+      color = "Estimator",
+      shape = "Estimator"
+    ) +
+    theme_minimal(base_size = 16) +
+    theme(
+      legend.position = "top",
+      plot.title = element_text(face = "bold", hjust = 0),
+      axis.text.y = element_text(size = 12),
+      panel.grid.minor = element_blank(),
+      panel.grid.major.y = element_blank()
+    )
+}
+
+##################################################
+# 8. Create four forest plots
+##################################################
+
+p_direct <- make_effect_forest_plot(df, "Direct")
+p_indirect <- make_effect_forest_plot(df, "Indirect")
+p_total <- make_effect_forest_plot(df, "Total")
+p_overall <- make_effect_forest_plot(df, "Overall")
+
+ggsave("spillover_forest_direct.pdf", p_direct, width = 10, height = 4.5)
+ggsave("spillover_forest_indirect.pdf", p_indirect, width = 10, height = 5.5)
+ggsave("spillover_forest_total.pdf", p_total, width = 10, height = 5.5)
+ggsave("spillover_forest_overall.pdf", p_overall, width = 10, height = 5.5)
+
+
+```
