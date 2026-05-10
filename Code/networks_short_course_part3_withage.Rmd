@@ -46,10 +46,15 @@ rm(list = ls())
 no_cores <- detectCores() - 1  
 registerDoParallel(cores=no_cores)  
 
-#Can source GitHub page 
+
 #source("https://github.com/uri-ncipher/Nearest-Neighbor-estimators/blob/main/functions.R?raw=TRUE")
-source("IPW_functions.R")
-source("gcomp_dr_v2.R") #Ting-Fang removed warnings for bootstrap
+#source("IPW_functions.R")
+#source("gcomp_dr_v2.R") #Ting-Fang removed warnings for bootstrap
+
+# Source required R scripts directly from GitHub
+source("https://raw.githubusercontent.com/uri-ncipher/Causal-Inference-and-Networks-Short-Course/refs/heads/main/Code/IPW_functions.R")
+source("https://raw.githubusercontent.com/uri-ncipher/Causal-Inference-and-Networks-Short-Course/refs/heads/main/Code/gcomp_dr_v2.R")
+
 ```
 
 ### Data Preparation
