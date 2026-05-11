@@ -596,7 +596,7 @@ df <- bind_rows(
 
 # Optional check: verify all estimator/effect/contrast combinations are present.
 df %>%
-  count(estimator, effect, contrast) %>%
+  dplyr::count(estimator, effect, contrast) %>%
   arrange(estimator, effect, contrast)
 
 ##################################################
@@ -638,7 +638,7 @@ make_effect_forest_plot <- function(plot_data, effect_name) {
       contrast_map,
       by = c("contrast", "display_alpha1", "display_alpha0")
     ) %>%
-    mutate(
+    dplyr::mutate(
       y_pos = contrast_id + estimator_offsets[as.character(estimator)]
     )
 
