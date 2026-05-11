@@ -20,12 +20,6 @@ Load packages and function script...
 # 1. Read data and functions into R
 # -----------------------------
 
-# Set the working directory to the current file's folder
-# install.packages("rstudioapi")
-library(rstudioapi)
-setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
-getwd() # verify the change
-
 library(lme4)
 library(plyr)
 library(dplyr)
@@ -39,6 +33,10 @@ library(kableExtra)
 library(ggplot2)
 library(forcats)
 rm(list = ls())
+
+if ("package:sna" %in% search()) {
+  detach("package:sna", unload = TRUE)
+}   # sna package is used in part 2, but it will mess up with igraph function in part 3, so I unload it here.
 
 no_cores <- detectCores() - 1  
 registerDoParallel(cores=no_cores)  
@@ -341,8 +339,8 @@ z <- qnorm(0.975)
 # 1. Result object helper
 ##################################################
 
-conflicts_prefer(dplyr::filter) # filter will now always use dplyr, even if MASS is loaded
-conflicts_prefer(dplyr::count)
+# conflicts_prefer(dplyr::filter) # filter will now always use dplyr, even if MASS is loaded
+# conflicts_prefer(dplyr::count)
 
 make_result_object <- function(x) {
   if (is.list(x) && !is.data.frame(x)) {
@@ -585,7 +583,7 @@ df <- bind_rows(
 
 # Optional check: verify all estimator/effect/contrast combinations are present.
 df %>%
-  count(estimator, effect, contrast) %>%
+  dplyr::count(estimator, effect, contrast) %>%
   arrange(estimator, effect, contrast)
 
 ##################################################
@@ -620,7 +618,7 @@ make_effect_forest_plot <- function(plot_data, effect_name) {
   contrast_map <- plot_data %>%
     distinct(contrast, display_alpha1, display_alpha0) %>%
     arrange(desc(display_alpha1), desc(display_alpha0)) %>%
-    mutate(contrast_id = row_number())
+    dplyr::mutate(contrast_id = row_number())
 
   plot_data <- plot_data %>%
     left_join(
