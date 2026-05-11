@@ -15,7 +15,7 @@ install_if_missing <- function(pkg) {
 packages <- c("rstudioapi", "lme4", "plyr", "igraph", "numDeriv", "gtools", 
               "doParallel", "foreach", "knitr", "kableExtra", "ggplot2", "forcats", 
               "geepack", "tidyverse", "cobalt", "scales", "readxl", 
-              "purrr", "ergm", "sna", "network", "coda", "dplyr")
+              "purrr", "ergm", "sna", "network", "coda", "dplyr", "conflicted")
 
 
 # --- Install ---
