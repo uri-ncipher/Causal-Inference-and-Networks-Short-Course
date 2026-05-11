@@ -38,8 +38,8 @@ library(scales)
 # 1. Read data into R
 # -----------------------------
 
-nodes <- read.csv("https://raw.githubusercontent.com/uri-ncipher/Causal-Inference-and-Networks-Short-Course/refs/heads/main/Data/TRIPsim_nodes.csv?token=GHSAT0AAAAAAD3744H66VXTAUX7FN33QHRU2QASL3Q")
-edges <- read.csv("https://raw.githubusercontent.com/uri-ncipher/Causal-Inference-and-Networks-Short-Course/refs/heads/main/Data/TRIPsim_edges.csv?token=GHSAT0AAAAAAD3744H767IX2GBFIFQY2LIO2QASKXA")
+nodes <- read.csv("https://raw.githubusercontent.com/uri-ncipher/Causal-Inference-and-Networks-Short-Course/refs/heads/main/Data/TRIPsim_nodes.csv")
+edges <- read.csv("https://raw.githubusercontent.com/uri-ncipher/Causal-Inference-and-Networks-Short-Course/refs/heads/main/Data/TRIPsim_edges.csv")
 
 head(nodes)
 head(edges)
