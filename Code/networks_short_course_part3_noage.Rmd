@@ -63,8 +63,11 @@ Read in the synthetic nodes and edges data sets for creating the simulated netwo
 # 2. Data Preparation
 # -----------------------------
 
-nodes <- read.csv("https://raw.githubusercontent.com/uri-ncipher/Causal-Inference-and-Networks-Short-Course/refs/heads/main/Data/TRIPsim_nodes.csv?token=GHSAT0AAAAAAD3744H66VXTAUX7FN33QHRU2QASL3Q")
-edges <- read.csv("https://raw.githubusercontent.com/uri-ncipher/Causal-Inference-and-Networks-Short-Course/refs/heads/main/Data/TRIPsim_edges.csv?token=GHSAT0AAAAAAD3744H75UTOOZ6X5X7F25ZE2QASMGA")
+nodes <- read.csv("https://raw.githubusercontent.com/uri-ncipher/Causal-Inference-and-Networks-Short-Course/refs/heads/main/Data/TRIPsim_nodes.csv")
+edges <- read.csv("https://raw.githubusercontent.com/uri-ncipher/Causal-Inference-and-Networks-Short-Course/refs/heads/main/Data/TRIPsim_edges.csv")
+
+head(nodes)
+head(edges)
 
 net0=graph_from_data_frame(d=edges, vertices = nodes, directed=F)  # create network based on the nodes and edges data.
 ```
